@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Review prayer request</title>
+<!--
+  Moderation review page for the prayer app.
+
+  This exists as a static site because Supabase rewrites any text/html
+  response from *.supabase.co to text/plain with a CSP sandbox, so the
+  Edge Function cannot serve a page with buttons. The function does the
+  work and returns JSON; this page is only the UI.
+
+  Nothing happens on page load beyond a read-only lookup. A decision is
+  sent only when a button is pressed, as a POST — that is what keeps
+  link previews (Discord, Slack, iMessage) from approving posts by
+  fetching the URL.
+
+  No secrets here: the endpoint is public and the per-post single-use
+  token in the query string is the only credential.
+-->
+<meta name="robots" content="noindex,nofollow">
+<style>
+  :root {
+    --bg: #FAF7F2;
+    --surface: #FFFFFF;
+    --text: #2B2A28;
+    --muted: #8A8579;
+    --accent: #3E5C76;
+    --border: #EDE7DC;
+    --warn: #8A6A3E;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1C1B1A;
+      --surface: #262523;
+      --text: #F2EEE7;
+      --muted: #9A948A;
+      --accent: #8FB0CC;
+      --border: #383634;
+      --warn: #C9A46A;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  main { width: 100%; max-width: 480px; }
+  h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 16px;
+    text-align: center;
+  }
+  blockquote {
+    margin: 0 0 16px;
+    padding: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    font-size: 17px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .meta { color: var(--muted); font-size: 13px; text-align: center; margin: 0 0 20px; }
+  .flag {
+    display: block;
+    color: var(--warn);
+    font-size: 13px;
+    text-align: center;
+    margin: 0 0 12px;
+  }
+  .actions { display: flex; gap: 12px; }
+  button {
+    flex: 1;
+    padding: 15px 20px;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: inherit;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button:active:not(:disabled) { opacity: 0.8; }
+  .approve { background: var(--accent); color: #fff; border: 0; }
+  .reject { background: transparent; color: var(--warn); border: 1px solid var(--border); }
+  .status { text-align: center; font-size: 16px; margin: 0; }
+  .status strong { display: block; font-size: 19px; margin-bottom: 8px; }
+  .muted { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main id="root"><p class="status muted">Loading…</p></main>
+
+<script>
+  var ENDPOINT = "https://ckupdyzodlwietdwmueq.supabase.co/functions/v1/moderate";
+  var root = document.getElementById("root");
+  var token = new URLSearchParams(location.search).get("token");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function show(title, detail, cls) {
+    root.innerHTML =
+      '<p class="status"><strong>' + esc(title) + "</strong>" +
+      (detail ? '<span class="' + (cls || "muted") + '">' + esc(detail) + "</span>" : "") +
+      "</p>";
+  }
+
+  function ago(iso) {
+    var mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (mins < 1) return "just now";
+    if (mins < 60) return mins + (mins === 1 ? " minute ago" : " minutes ago");
+    var hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + (hrs === 1 ? " hour ago" : " hours ago");
+    var days = Math.round(hrs / 24);
+    return days + (days === 1 ? " day ago" : " days ago");
+  }
+
+  function decide(action, buttons) {
+    buttons.forEach(function (b) { b.disabled = true; });
+    fetch(ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ token: token, action: action })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.result === "approved") {
+          show("Approved", "It is now visible in the feed.");
+        } else if (d.result === "rejected") {
+          show("Rejected", "It will not appear in the feed.");
+        } else if (d.result === "invalid_or_used" || d.error === "invalid_or_used") {
+          show("Already reviewed", "This request has already been decided.");
+        } else if (d.result && d.result.indexOf("already_") === 0) {
+          show("Already " + d.result.replace("already_", ""), "Someone got there first.");
+        } else {
+          show("Something went wrong", "The decision was not saved. Try again.");
+          buttons.forEach(function (b) { b.disabled = false; });
+        }
+      })
+      .catch(function () {
+        show("Network error", "The decision was not saved. Try again.");
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+  }
+
+  function render(post) {
+    if (post.moderation_status !== "pending") {
+      root.innerHTML =
+        '<h1>Already ' + esc(post.moderation_status) + "</h1>" +
+        "<blockquote>" + esc(post.body) + "</blockquote>";
+      return;
+    }
+
+    root.innerHTML =
+      "<h1>Prayer request awaiting review</h1>" +
+      (post.flagged_by_filter
+        ? '<span class="flag">Flagged by the word filter</span>'
+        : "") +
+      "<blockquote>" + esc(post.body) + "</blockquote>" +
+      '<p class="meta">Submitted ' + esc(ago(post.created_at)) + "</p>" +
+      '<div class="actions">' +
+      '<button class="approve" id="approve">Approve</button>' +
+      '<button class="reject" id="reject">Reject</button>' +
+      "</div>";
+
+    var approve = document.getElementById("approve");
+    var reject = document.getElementById("reject");
+    var both = [approve, reject];
+    approve.addEventListener("click", function () { decide("approve", both); });
+    reject.addEventListener("click", function () { decide("reject", both); });
+  }
+
+  if (!token) {
+    show("Incomplete link", "No review token in the URL.");
+  } else {
+    fetch(ENDPOINT + "?token=" + encodeURIComponent(token), {
+      headers: { Accept: "application/json" }
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error === "invalid_or_used") {
+          show("Link no longer valid", "This request has already been reviewed.");
+        } else if (d.error) {
+          show("Could not load", "Something went wrong fetching this request.");
+        } else {
+          render(d);
+        }
+      })
+      .catch(function () {
+        show("Network error", "Could not reach the server.");
+      });
+  }
+</script>
+</body>
+</html>
